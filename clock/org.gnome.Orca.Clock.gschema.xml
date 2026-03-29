@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.Orca.Clock" path="/org/gnome/orca/clock/">
+    <key name="interval" type="i">
+      <default>0</default>
+      <summary>Time announcement interval in minutes (0=off, 15, 30, 60)</summary>
+    </key>
+    <key name="chime-style" type="s">
+      <default>'off'</default>
+      <summary>Chime style: off, speech, sound, sound-speech</summary>
+    </key>
+    <key name="chime-sound" type="s">
+      <default>'clock_chime1.wav'</default>
+      <summary>Filename of the hourly chime sound</summary>
+    </key>
+    <key name="chime-volume" type="d">
+      <default>0.5</default>
+      <summary>Chime playback volume (0.0 to 1.0)</summary>
+    </key>
+    <key name="intermediate-enabled" type="b">
+      <default>false</default>
+      <summary>Use a different sound for intermediate (quarter/half hour) chimes</summary>
+    </key>
+    <key name="intermediate-sound" type="s">
+      <default>'clock_chime3.wav'</default>
+      <summary>Filename of the intermediate (quarter/half hour) chime sound</summary>
+    </key>
+  </schema>
+</schemalist>
