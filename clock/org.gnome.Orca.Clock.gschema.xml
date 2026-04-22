@@ -25,5 +25,21 @@
       <default>'clock_chime3.wav'</default>
       <summary>Filename of the intermediate (quarter/half hour) chime sound</summary>
     </key>
+    <key name="quiet-hours-enabled" type="b">
+      <default>false</default>
+      <summary>Whether quiet hours are active</summary>
+    </key>
+    <key name="quiet-hours-start" type="s">
+      <default>'22:00'</default>
+      <summary>Quiet hours start time (HH:MM, 24-hour)</summary>
+    </key>
+    <key name="quiet-hours-end" type="s">
+      <default>'07:00'</default>
+      <summary>Quiet hours end time (HH:MM, 24-hour)</summary>
+    </key>
+    <key name="quiet-hours-days" type="ai">
+      <default>[0, 1, 2, 3, 4, 5, 6]</default>
+      <summary>Days of the week quiet hours apply (0=Monday, 6=Sunday)</summary>
+    </key>
   </schema>
 </schemalist>

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import math
 import os
 import subprocess
 import threading
@@ -97,8 +98,22 @@ def _schedule_next(config: Config) -> None:
             delay = secs_until_boundary - chime_dur
         if delay < 0.5:
             delay += config.interval * 60
+    elif config.uses_sound:
+        # Sound-only: most sounds play at the boundary, but BBC pips
+        # need to start early so the 6th pip lands on the boundary.
+        if is_hourly or not config.intermediate_enabled:
+            sound_file = config.chime_sound
+        else:
+            sound_file = config.intermediate_sound
+        if sound_file == _BBC_PIPS_FILE:
+            delay = secs_until_boundary - _BBC_PIPS_FINAL_ONSET
+        else:
+            delay = secs_until_boundary
+        if delay < 0.5:
+            delay += config.interval * 60
     else:
-        delay = secs_until_boundary
+        # Speech-only: add a small buffer so we fire just after :00, never before
+        delay = secs_until_boundary + 0.1
         if delay < 0.5:
             delay += config.interval * 60
 
@@ -135,15 +150,33 @@ def _on_timer(config: Config) -> bool:
     if past == 0 and second < 15:
         secs_to_boundary = -second  # we're just past the boundary
 
-    max_drift = (config.get_chime_duration() + 3) if config.uses_precision_timing else 5
+    if config.uses_precision_timing:
+        max_drift = config.get_chime_duration() + 3
+    elif config.uses_sound and config.chime_sound == _BBC_PIPS_FILE:
+        max_drift = _BBC_PIPS_FINAL_ONSET + 3
+    else:
+        max_drift = 5
     if abs(secs_to_boundary) > max_drift and secs_to_boundary < config.interval * 60 - max_drift:
         _log.info("Clock: timer drifted (%.1fs to boundary), rescheduling", secs_to_boundary)
         _schedule_next(config)
         return False
 
-    # Determine if this is an hourly or intermediate chime
+    # Determine if the upcoming boundary is on the hour.
+    # We can't just check now.minute — in precision mode the timer fires
+    # seconds before the boundary, so we calculate the next boundary directly.
     now = datetime.datetime.now()
-    is_hourly = now.minute < (config.interval // 2)  # close to :00
+    secs_into_hour = now.minute * 60 + now.second + now.microsecond / 1_000_000
+    interval_secs = config.interval * 60
+    target_minute = math.ceil(secs_into_hour / interval_secs) * config.interval % 60
+    is_hourly = target_minute == 0
+
+    # Skip announcement if the boundary falls in quiet hours.
+    # Check against the boundary time (not fire time), since we may fire early.
+    boundary_time = now + datetime.timedelta(seconds=max(secs_to_boundary, 0))
+    if config.is_in_quiet_hours(boundary_time):
+        _log.info("Clock: quiet hours active, skipping announcement")
+        _schedule_next(config)
+        return False
 
     # Dispatch based on chime style
     if config.chime_style == "speech":

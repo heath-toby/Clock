@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import logging
 import os
 import subprocess
@@ -43,6 +44,10 @@ class Config:
         self.chime_volume: float = 0.5
         self.intermediate_enabled: bool = False
         self.intermediate_sound: str = "clock_chime3.wav"
+        self.quiet_hours_enabled: bool = False
+        self.quiet_hours_start: str = "22:00"
+        self.quiet_hours_end: str = "07:00"
+        self.quiet_hours_days: list[int] = [0, 1, 2, 3, 4, 5, 6]
         self._settings: Gio.Settings | None = None
         self._duration_cache: dict[str, float] = {}
 
@@ -65,6 +70,10 @@ class Config:
         self.chime_volume = self._settings.get_double("chime-volume")
         self.intermediate_enabled = self._settings.get_boolean("intermediate-enabled")
         self.intermediate_sound = self._settings.get_string("intermediate-sound")
+        self.quiet_hours_enabled = self._settings.get_boolean("quiet-hours-enabled")
+        self.quiet_hours_start = self._settings.get_string("quiet-hours-start")
+        self.quiet_hours_end = self._settings.get_string("quiet-hours-end")
+        self.quiet_hours_days = list(self._settings.get_value("quiet-hours-days").unpack())
         # Validate
         if self.interval not in _VALID_INTERVALS:
             self.interval = 0
@@ -81,6 +90,12 @@ class Config:
         self._settings.set_double("chime-volume", self.chime_volume)
         self._settings.set_boolean("intermediate-enabled", self.intermediate_enabled)
         self._settings.set_string("intermediate-sound", self.intermediate_sound)
+        self._settings.set_boolean("quiet-hours-enabled", self.quiet_hours_enabled)
+        self._settings.set_string("quiet-hours-start", self.quiet_hours_start)
+        self._settings.set_string("quiet-hours-end", self.quiet_hours_end)
+        self._settings.set_value(
+            "quiet-hours-days", GLib.Variant("ai", sorted(set(self.quiet_hours_days))),
+        )
 
     @property
     def sounds_dir(self) -> str:
@@ -135,3 +150,44 @@ class Config:
     @property
     def uses_precision_timing(self) -> bool:
         return self.chime_style == "sound-speech"
+
+    @staticmethod
+    def _parse_hhmm(text: str) -> tuple[int, int] | None:
+        try:
+            h, m = text.strip().split(":")
+            h_i, m_i = int(h), int(m)
+            if 0 <= h_i < 24 and 0 <= m_i < 60:
+                return h_i, m_i
+        except (ValueError, AttributeError):
+            pass
+        return None
+
+    def is_in_quiet_hours(self, when: datetime.datetime | None = None) -> bool:
+        """Return True if `when` (default: now) falls in a configured quiet window."""
+        if not self.quiet_hours_enabled:
+            return False
+        start = self._parse_hhmm(self.quiet_hours_start)
+        end = self._parse_hhmm(self.quiet_hours_end)
+        if start is None or end is None:
+            return False
+        if start == end:
+            return False
+        if not self.quiet_hours_days:
+            return False
+
+        now = when or datetime.datetime.now()
+        # Each quiet window begins at `start` on one of the selected days.
+        # If end <= start, the window crosses midnight and ends the next day.
+        # Check windows anchored today and yesterday so that overnight windows catch us.
+        for days_ago in (0, 1):
+            anchor = (now - datetime.timedelta(days=days_ago)).replace(
+                hour=start[0], minute=start[1], second=0, microsecond=0,
+            )
+            if anchor.weekday() not in self.quiet_hours_days:
+                continue
+            end_dt = anchor.replace(hour=end[0], minute=end[1])
+            if end_dt <= anchor:
+                end_dt += datetime.timedelta(days=1)
+            if anchor <= now < end_dt:
+                return True
+        return False

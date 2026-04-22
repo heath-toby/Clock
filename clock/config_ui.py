@@ -43,6 +43,16 @@ _STYLES = [
     ("sound-speech", "Sound then speech"),
 ]
 
+_DAY_NAMES = [
+    (0, "Monday"),
+    (1, "Tuesday"),
+    (2, "Wednesday"),
+    (3, "Thursday"),
+    (4, "Friday"),
+    (5, "Saturday"),
+    (6, "Sunday"),
+]
+
 
 def _suspend_events():
     global _resume_timer_id
@@ -212,6 +222,43 @@ class ClockSettingsWindow(Gtk.Window):
 
         vbox.pack_start(self._int_box, False, False, 0)
 
+        # --- Quiet hours ---
+        self._qh_check = Gtk.CheckButton(label="Enable quiet hours")
+        self._qh_check.get_accessible().set_name("Enable quiet hours")
+        self._qh_check.set_active(self._config.quiet_hours_enabled)
+        self._qh_check.connect("toggled", self._on_qh_toggled)
+        vbox.pack_start(self._qh_check, False, False, 0)
+
+        self._qh_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+
+        times_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        start_label = Gtk.Label(label="Start (HH:MM):", xalign=0)
+        self._qh_start_entry = Gtk.Entry()
+        self._qh_start_entry.set_text(self._config.quiet_hours_start)
+        self._qh_start_entry.set_max_length(5)
+        self._qh_start_entry.set_width_chars(6)
+        self._qh_start_entry.get_accessible().set_name("Quiet hours start time")
+        end_label = Gtk.Label(label="End (HH:MM):", xalign=0)
+        self._qh_end_entry = Gtk.Entry()
+        self._qh_end_entry.set_text(self._config.quiet_hours_end)
+        self._qh_end_entry.set_max_length(5)
+        self._qh_end_entry.set_width_chars(6)
+        self._qh_end_entry.get_accessible().set_name("Quiet hours end time")
+        times_box.pack_start(start_label, False, False, 0)
+        times_box.pack_start(self._qh_start_entry, False, False, 0)
+        times_box.pack_start(end_label, False, False, 0)
+        times_box.pack_start(self._qh_end_entry, False, False, 0)
+        self._qh_box.pack_start(times_box, False, False, 0)
+
+        self._qh_days = list(self._config.quiet_hours_days)
+        self._qh_days_btn = Gtk.Button(label="Quiet hours days...")
+        self._qh_days_btn.get_accessible().set_name("Configure quiet hours days")
+        self._qh_days_btn.connect("clicked", self._on_qh_days_clicked)
+        self._update_qh_days_btn_label()
+        self._qh_box.pack_start(self._qh_days_btn, False, False, 0)
+
+        vbox.pack_start(self._qh_box, False, False, 0)
+
         # --- Buttons ---
         btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         btn_box.set_halign(Gtk.Align.END)
@@ -240,6 +287,7 @@ class ClockSettingsWindow(Gtk.Window):
 
         # Set initial sensitivity of sound widgets
         self._update_sound_sensitivity()
+        self._update_qh_sensitivity()
 
     def _update_sound_sensitivity(self):
         style = self._style_combo.get_active_id() or "off"
@@ -258,6 +306,65 @@ class ClockSettingsWindow(Gtk.Window):
 
     def _on_int_toggled(self, check):
         self._update_sound_sensitivity()
+
+    def _update_qh_sensitivity(self):
+        self._qh_box.set_sensitive(self._qh_check.get_active())
+
+    def _on_qh_toggled(self, check):
+        self._update_qh_sensitivity()
+
+    def _update_qh_days_btn_label(self):
+        if not self._qh_days:
+            summary = "no days"
+        elif len(self._qh_days) == 7:
+            summary = "every day"
+        else:
+            names = [name[:3] for day, name in _DAY_NAMES if day in self._qh_days]
+            summary = ", ".join(names)
+        self._qh_days_btn.set_label(f"Quiet hours days ({summary})...")
+
+    def _on_qh_days_clicked(self, button):
+        # Don't suspend AT-SPI events here — by the time the user reaches
+        # this button the parent's focus_first resume has fired, so Orca
+        # can announce the checkboxes as the user tabs through them.
+        dialog = Gtk.Dialog(
+            title="Quiet hours days",
+            transient_for=self,
+            modal=True,
+        )
+        dialog.get_accessible().set_name("Quiet hours days")
+        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
+        dialog.add_button("OK", Gtk.ResponseType.OK)
+        dialog.set_default_response(Gtk.ResponseType.OK)
+
+        content = dialog.get_content_area()
+        content.set_spacing(6)
+        content.set_margin_top(12)
+        content.set_margin_bottom(12)
+        content.set_margin_start(18)
+        content.set_margin_end(18)
+
+        checks = {}
+        first_cb = None
+        for day, name in _DAY_NAMES:
+            cb = Gtk.CheckButton(label=name)
+            cb.get_accessible().set_name(name)
+            cb.set_active(day in self._qh_days)
+            cb.set_can_focus(True)
+            content.pack_start(cb, False, False, 0)
+            checks[day] = cb
+            if first_cb is None:
+                first_cb = cb
+
+        dialog.show_all()
+        if first_cb is not None:
+            first_cb.grab_focus()
+
+        response = dialog.run()
+        if response == Gtk.ResponseType.OK:
+            self._qh_days = sorted(d for d, cb in checks.items() if cb.get_active())
+            self._update_qh_days_btn_label()
+        dialog.destroy()
 
     def _on_test(self, button):
         """Play the selected chime, then speak the time — for verification."""
@@ -380,6 +487,15 @@ class ClockSettingsWindow(Gtk.Window):
         int_id = self._int_combo.get_active_id()
         if int_id:
             self._config.intermediate_sound = int_id
+
+        self._config.quiet_hours_enabled = self._qh_check.get_active()
+        start_text = self._qh_start_entry.get_text().strip()
+        if Config._parse_hhmm(start_text) is not None:
+            self._config.quiet_hours_start = start_text
+        end_text = self._qh_end_entry.get_text().strip()
+        if Config._parse_hhmm(end_text) is not None:
+            self._config.quiet_hours_end = end_text
+        self._config.quiet_hours_days = list(self._qh_days)
 
         self._config.save()
 
