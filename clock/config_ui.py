@@ -203,6 +203,10 @@ class ClockSettingsWindow(Gtk.Window):
         vbox.pack_start(self._int_check, False, False, 0)
 
         self._int_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        # Kept out of the window's show_all(), which would otherwise reveal
+        # this row whatever _update_sound_sensitivity had just decided --
+        # so it appeared on opening even with the checkbox clear.
+        self._int_box.set_no_show_all(True)
         self._int_combo = Gtk.ComboBoxText()
         self._int_combo.get_accessible().set_name("Intermediate chime sound")
         active_idx = 0
@@ -219,6 +223,12 @@ class ClockSettingsWindow(Gtk.Window):
 
         self._int_box.pack_start(self._int_combo, True, True, 0)
         self._int_box.pack_start(self._int_preview_btn, False, False, 0)
+        # Shown once, here, because set_no_show_all stops show_all descending
+        # into this box -- including the box's own show_all. The children keep
+        # their visible flag from now on and the box's own visibility is what
+        # makes the row come and go.
+        self._int_combo.show()
+        self._int_preview_btn.show()
 
         vbox.pack_start(self._int_box, False, False, 0)
 
@@ -264,7 +274,8 @@ class ClockSettingsWindow(Gtk.Window):
         btn_box.set_halign(Gtk.Align.END)
         btn_box.set_margin_top(12)
 
-        # Temporary test button — plays chime then speaks time
+        # Plays the selected chime, then speaks the time: the only way to
+        # hear a chime style end to end without waiting for a boundary.
         test_btn = Gtk.Button(label="Test")
         test_btn.get_accessible().set_name("Test sound and speech")
         test_btn.connect("clicked", self._on_test)
@@ -366,6 +377,15 @@ class ClockSettingsWindow(Gtk.Window):
             self._update_qh_days_btn_label()
         dialog.destroy()
 
+    def _current_volume(self) -> float:
+        """The volume as the slider has it.
+
+        Not self._config.chime_volume: that is the saved value and does not
+        move until Save, so auditioning a level after dragging the slider
+        played at the old one -- which is the one thing Preview is for.
+        """
+        return round(self._vol_scale.get_value(), 2)
+
     def _on_test(self, button):
         """Play the selected chime, then speak the time — for verification."""
         from .clock import _BBC_PIPS_FILE, _BBC_PIPS_FINAL_ONSET
@@ -373,11 +393,12 @@ class ClockSettingsWindow(Gtk.Window):
         fname = self._sound_combo.get_active_id()
         path = os.path.join(self._config.sounds_dir, fname) if fname else None
         is_bbc_pips = fname == _BBC_PIPS_FILE
+        volume = self._current_volume()
 
         def _worker():
             if path and os.path.isfile(path):
                 try:
-                    proc = subprocess.Popen(["pw-play", "--volume", str(self._config.chime_volume), path])
+                    proc = subprocess.Popen(["pw-play", "--volume", str(volume), path])
                     with self._preview_lock:
                         self._preview_proc = proc
                     if is_bbc_pips:
@@ -419,10 +440,11 @@ class ClockSettingsWindow(Gtk.Window):
         if not os.path.isfile(path):
             return
         self._stop_preview()
+        volume = self._current_volume()
 
         def _play():
             try:
-                proc = subprocess.Popen(["pw-play", "--volume", str(self._config.chime_volume), path])
+                proc = subprocess.Popen(["pw-play", "--volume", str(volume), path])
                 with self._preview_lock:
                     self._preview_proc = proc
                 proc.wait()

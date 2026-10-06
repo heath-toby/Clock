@@ -1,4 +1,16 @@
-"""GSettings-backed configuration for Clock for Orca."""
+"""Configuration for Clock for Orca.
+
+Values live in Orca's own per-extension settings store (dconf, under
+``/org/gnome/orca/<profile>/extensions/clock/settings``), which is what
+the Orca 51 extension system reads and writes. Clock used to keep them
+in a private GSettings schema, ``org.gnome.Orca.Clock``; settings from
+that schema are imported once, automatically, on first run -- see
+``migrate_legacy_settings``.
+
+The public attributes of ``Config`` are unchanged from the pre-extension
+versions, so the hand-written settings dialog in ``config_ui`` works
+against either backend without modification.
+"""
 
 from __future__ import annotations
 
@@ -13,103 +25,211 @@ from gi.repository import Gio, GLib
 
 _log = logging.getLogger("orca-clock")
 
-SCHEMA_ID = "org.gnome.Orca.Clock"
+# The private schema Clock used before the Orca 51 extension system.
+LEGACY_SCHEMA_ID = "org.gnome.Orca.Clock"
 
-_VALID_INTERVALS = (0, 15, 30, 60)
-_VALID_STYLES = ("off", "speech", "sound", "sound-speech")
+# Bumped when the shape of the stored settings changes. Its presence also
+# marks the legacy import as done, so it never runs twice -- including
+# when the user has deliberately reset everything back to defaults.
+SETTINGS_VERSION = 2
+_VERSION_KEY = "settings-version"
+
+VALID_INTERVALS = (0, 15, 30, 60)
+VALID_STYLES = ("off", "speech", "sound", "sound-speech")
+
+# 0=Monday .. 6=Sunday, matching datetime.weekday() and the ints the
+# legacy "quiet-hours-days" key held.
+DAY_KEYS = (
+    "quiet-hours-monday",
+    "quiet-hours-tuesday",
+    "quiet-hours-wednesday",
+    "quiet-hours-thursday",
+    "quiet-hours-friday",
+    "quiet-hours-saturday",
+    "quiet-hours-sunday",
+)
+
+DEFAULT_INTERVAL = 0
+DEFAULT_CHIME_STYLE = "off"
+DEFAULT_CHIME_SOUND = "clock_chime1.wav"
+DEFAULT_CHIME_VOLUME = 0.5
+DEFAULT_INTERMEDIATE_ENABLED = False
+DEFAULT_INTERMEDIATE_SOUND = "clock_chime3.wav"
+DEFAULT_QUIET_HOURS_ENABLED = False
+DEFAULT_QUIET_HOURS_START = "22:00"
+DEFAULT_QUIET_HOURS_END = "07:00"
+DEFAULT_QUIET_HOURS_DAYS = [0, 1, 2, 3, 4, 5, 6]
 
 
-def _get_schema_source():
-    """Get a GSettings schema source that includes the user schema dir."""
+def sounds_dir() -> str:
+    """Return the directory holding the bundled chime sounds.
+
+    Resolved relative to this file so the package can be renamed or moved
+    (extensions/, clock_v51/, ...) without breaking.
+    """
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "sounds")
+
+
+def list_sounds() -> list[str]:
+    """Return the available chime filenames, sorted."""
+    directory = sounds_dir()
+    if not os.path.isdir(directory):
+        return []
+    return sorted(f for f in os.listdir(directory) if f.lower().endswith(".wav"))
+
+
+def _legacy_gsettings() -> Gio.Settings | None:
+    """Return the old private-schema Gio.Settings, or None if not installed."""
     user_schema_dir = os.path.join(
         os.environ.get("XDG_DATA_HOME", os.path.expanduser("~/.local/share")),
         "glib-2.0", "schemas",
     )
     default_source = Gio.SettingsSchemaSource.get_default()
     try:
-        return Gio.SettingsSchemaSource.new_from_directory(
+        source = Gio.SettingsSchemaSource.new_from_directory(
             user_schema_dir, default_source, False,
         )
     except GLib.Error:
-        return default_source
+        source = default_source
+    if source is None:
+        return None
+    schema = source.lookup(LEGACY_SCHEMA_ID, True)
+    if schema is None:
+        return None
+    return Gio.Settings.new_full(schema, None, None)
+
+
+def migrate_legacy_settings(settings) -> bool:
+    """Import settings from the pre-extension GSettings schema, once.
+
+    ``settings`` is the extension's ExtensionSettings. Returns True if
+    values were actually imported. Writes the version marker either way,
+    so a missing or already-migrated legacy schema costs one lookup at
+    most once in the life of the install.
+    """
+    if settings.get(_VERSION_KEY) is not None:
+        return False
+
+    legacy = _legacy_gsettings()
+    if legacy is None:
+        _log.info("Clock: no legacy %s schema to import from; using defaults.", LEGACY_SCHEMA_ID)
+        settings.set(_VERSION_KEY, SETTINGS_VERSION)
+        return False
+
+    try:
+        settings.set("interval", legacy.get_int("interval"))
+        settings.set("chime-style", legacy.get_string("chime-style"))
+        settings.set("chime-sound", legacy.get_string("chime-sound"))
+        settings.set("chime-volume", legacy.get_double("chime-volume"))
+        settings.set("intermediate-enabled", legacy.get_boolean("intermediate-enabled"))
+        settings.set("intermediate-sound", legacy.get_string("intermediate-sound"))
+        settings.set("quiet-hours-enabled", legacy.get_boolean("quiet-hours-enabled"))
+        settings.set("quiet-hours-start", legacy.get_string("quiet-hours-start"))
+        settings.set("quiet-hours-end", legacy.get_string("quiet-hours-end"))
+        days = set(legacy.get_value("quiet-hours-days").unpack())
+        for index, key in enumerate(DAY_KEYS):
+            settings.set(key, index in days)
+    except (GLib.Error, TypeError, ValueError) as error:
+        # Leave the version marker unset so a later run can try again
+        # rather than silently stranding the user on defaults.
+        _log.error("Clock: importing legacy settings failed: %s", error)
+        return False
+
+    settings.set(_VERSION_KEY, SETTINGS_VERSION)
+    _log.info("Clock: imported settings from the legacy %s schema.", LEGACY_SCHEMA_ID)
+    return True
 
 
 class Config:
-    """Clock configuration backed by GSettings."""
+    """Clock configuration, backed by Orca's per-extension settings."""
 
-    def __init__(self):
-        self.interval: int = 0
-        self.chime_style: str = "off"
-        self.chime_sound: str = "clock_chime1.wav"
-        self.chime_volume: float = 0.5
-        self.intermediate_enabled: bool = False
-        self.intermediate_sound: str = "clock_chime3.wav"
-        self.quiet_hours_enabled: bool = False
-        self.quiet_hours_start: str = "22:00"
-        self.quiet_hours_end: str = "07:00"
-        self.quiet_hours_days: list[int] = [0, 1, 2, 3, 4, 5, 6]
-        self._settings: Gio.Settings | None = None
+    def __init__(self, settings=None):
+        self._settings = settings
+        self.interval: int = DEFAULT_INTERVAL
+        self.chime_style: str = DEFAULT_CHIME_STYLE
+        self.chime_sound: str = DEFAULT_CHIME_SOUND
+        self.chime_volume: float = DEFAULT_CHIME_VOLUME
+        self.intermediate_enabled: bool = DEFAULT_INTERMEDIATE_ENABLED
+        self.intermediate_sound: str = DEFAULT_INTERMEDIATE_SOUND
+        self.quiet_hours_enabled: bool = DEFAULT_QUIET_HOURS_ENABLED
+        self.quiet_hours_start: str = DEFAULT_QUIET_HOURS_START
+        self.quiet_hours_end: str = DEFAULT_QUIET_HOURS_END
+        self.quiet_hours_days: list[int] = list(DEFAULT_QUIET_HOURS_DAYS)
         self._duration_cache: dict[str, float] = {}
 
     @classmethod
-    def load(cls) -> Config:
-        cfg = cls()
-        cfg._init_gsettings()
+    def load(cls, settings=None) -> Config:
+        """Read the current settings into a new Config."""
+        cfg = cls(settings)
+        cfg.reload()
         return cfg
 
-    def _init_gsettings(self):
-        source = _get_schema_source()
-        schema = source.lookup(SCHEMA_ID, True)
-        if schema is None:
-            _log.warning("Clock: GSettings schema %s not found, using defaults", SCHEMA_ID)
+    def reload(self) -> None:
+        """Re-read every value from the settings store."""
+        settings = self._settings
+        if settings is None:
+            _log.warning("Clock: no settings store; using defaults.")
             return
-        self._settings = Gio.Settings.new_full(schema, None, None)
-        self.interval = self._settings.get_int("interval")
-        self.chime_style = self._settings.get_string("chime-style")
-        self.chime_sound = self._settings.get_string("chime-sound")
-        self.chime_volume = self._settings.get_double("chime-volume")
-        self.intermediate_enabled = self._settings.get_boolean("intermediate-enabled")
-        self.intermediate_sound = self._settings.get_string("intermediate-sound")
-        self.quiet_hours_enabled = self._settings.get_boolean("quiet-hours-enabled")
-        self.quiet_hours_start = self._settings.get_string("quiet-hours-start")
-        self.quiet_hours_end = self._settings.get_string("quiet-hours-end")
-        self.quiet_hours_days = list(self._settings.get_value("quiet-hours-days").unpack())
-        # Validate
-        if self.interval not in _VALID_INTERVALS:
-            self.interval = 0
-        if self.chime_style not in _VALID_STYLES:
-            self.chime_style = "off"
 
-    def save(self):
-        if self._settings is None:
-            _log.error("Clock: cannot save, GSettings not available")
-            return
-        self._settings.set_int("interval", self.interval)
-        self._settings.set_string("chime-style", self.chime_style)
-        self._settings.set_string("chime-sound", self.chime_sound)
-        self._settings.set_double("chime-volume", self.chime_volume)
-        self._settings.set_boolean("intermediate-enabled", self.intermediate_enabled)
-        self._settings.set_string("intermediate-sound", self.intermediate_sound)
-        self._settings.set_boolean("quiet-hours-enabled", self.quiet_hours_enabled)
-        self._settings.set_string("quiet-hours-start", self.quiet_hours_start)
-        self._settings.set_string("quiet-hours-end", self.quiet_hours_end)
-        self._settings.set_value(
-            "quiet-hours-days", GLib.Variant("ai", sorted(set(self.quiet_hours_days))),
+        self.interval = int(settings.get("interval", DEFAULT_INTERVAL))
+        self.chime_style = str(settings.get("chime-style", DEFAULT_CHIME_STYLE))
+        self.chime_sound = str(settings.get("chime-sound", DEFAULT_CHIME_SOUND))
+        self.chime_volume = float(settings.get("chime-volume", DEFAULT_CHIME_VOLUME))
+        self.intermediate_enabled = bool(
+            settings.get("intermediate-enabled", DEFAULT_INTERMEDIATE_ENABLED)
         )
+        self.intermediate_sound = str(
+            settings.get("intermediate-sound", DEFAULT_INTERMEDIATE_SOUND)
+        )
+        self.quiet_hours_enabled = bool(
+            settings.get("quiet-hours-enabled", DEFAULT_QUIET_HOURS_ENABLED)
+        )
+        self.quiet_hours_start = str(settings.get("quiet-hours-start", DEFAULT_QUIET_HOURS_START))
+        self.quiet_hours_end = str(settings.get("quiet-hours-end", DEFAULT_QUIET_HOURS_END))
+        self.quiet_hours_days = [
+            index
+            for index, key in enumerate(DAY_KEYS)
+            if bool(settings.get(key, index in DEFAULT_QUIET_HOURS_DAYS))
+        ]
+
+        # A bad value here would mean a silent clock or a crash in the
+        # scheduler, so fall back rather than trust the store.
+        if self.interval not in VALID_INTERVALS:
+            _log.warning("Clock: ignoring invalid interval %r", self.interval)
+            self.interval = DEFAULT_INTERVAL
+        if self.chime_style not in VALID_STYLES:
+            _log.warning("Clock: ignoring invalid chime style %r", self.chime_style)
+            self.chime_style = DEFAULT_CHIME_STYLE
+        self.chime_volume = min(max(self.chime_volume, 0.0), 1.0)
+
+    def save(self) -> None:
+        """Write every value back to the settings store."""
+        settings = self._settings
+        if settings is None:
+            _log.error("Clock: cannot save, no settings store.")
+            return
+
+        settings.set("interval", int(self.interval))
+        settings.set("chime-style", str(self.chime_style))
+        settings.set("chime-sound", str(self.chime_sound))
+        settings.set("chime-volume", float(self.chime_volume))
+        settings.set("intermediate-enabled", bool(self.intermediate_enabled))
+        settings.set("intermediate-sound", str(self.intermediate_sound))
+        settings.set("quiet-hours-enabled", bool(self.quiet_hours_enabled))
+        settings.set("quiet-hours-start", str(self.quiet_hours_start))
+        settings.set("quiet-hours-end", str(self.quiet_hours_end))
+        selected = set(self.quiet_hours_days)
+        for index, key in enumerate(DAY_KEYS):
+            settings.set(key, index in selected)
 
     @property
     def sounds_dir(self) -> str:
-        orca_dir = os.path.join(
-            os.environ.get("XDG_DATA_HOME", os.path.expanduser("~/.local/share")),
-            "orca", "clock", "sounds",
-        )
-        return orca_dir
+        """Directory holding the bundled chime sounds."""
+        return sounds_dir()
 
     def list_sounds(self) -> list[str]:
-        d = self.sounds_dir
-        if not os.path.isdir(d):
-            return []
-        return sorted(f for f in os.listdir(d) if f.lower().endswith(".wav"))
+        """Available chime filenames, sorted."""
+        return list_sounds()
 
     def get_chime_path(self, is_hourly: bool = True) -> str:
         if is_hourly or not self.intermediate_enabled:
