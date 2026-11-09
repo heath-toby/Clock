@@ -1,5 +1,20 @@
 # Changelog
 
+## 2.0.1
+
+Declares `WEBSITE`, so [Extension Updater][eu] can find this add-on's
+releases. Orca reads that field with `ast`, without importing the extension,
+and shows it as a link in Preferences -> User Extensions -> Info.
+
+No behaviour changes.
+
+Also declares `__update_include__ = ("sounds",)`, so an update installs the
+chimes along with the code. They live at the repository root and `install.sh`
+copies them into the package, so an update that replaced only the Python
+files would leave Clock with nothing to play.
+
+[eu]: https://github.com/heath-toby/orca-extension-updater
+
 All notable changes to Clock for Orca.
 
 ## [2.0.0] - 2026-10-06

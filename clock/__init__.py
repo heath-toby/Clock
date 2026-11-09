@@ -5,7 +5,13 @@ approve with ``orca --approve-extension clock``; Orca re-checks the hash
 of every file in the package on each start, so re-approve after editing.
 """
 
-__version__ = "2.0.0"
+__version__ = "2.0.1"
+
+# Installed into the extension package from the repository root, where
+# the chimes live. install.sh copies them in and Orca's approval hash
+# then covers them, so an update that replaced only the Python files
+# would leave Clock with no chimes to play.
+__update_include__ = ("sounds",)
 
 import logging
 
@@ -42,7 +48,7 @@ class Clock(Extension):
 
     GROUP_LABEL = "Clock"
     DESCRIPTION = "Announces the time at a chosen interval, optionally with a chime, and can stay quiet during configured hours."
-    VERSION = "2.0.0"  # keep in sync with __version__; read by AST, must be a literal
+    VERSION = "2.0.1"  # keep in sync with __version__; read by AST, must be a literal
     AUTHOR = "Toby"
     WEBSITE = "https://github.com/heath-toby/Clock"
 
